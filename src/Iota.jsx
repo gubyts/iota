@@ -193,14 +193,18 @@ export default function Iota() {
       return;
     }
 
-    // 1) CROP to the target band where the user is aiming the address bar.
-    //    These ratios match the JSX overlay below.
+    // 1) CROP to a tight band where the URL text actually lives.
+    //    - Vertical: thin band, just one line of text. Wider bands pick up tab
+    //      rows, favicons stacked above, and other UI chrome.
+    //    - Horizontal: skip the leftmost ~20% to exclude the favicon, lock icon,
+    //      site-info button, etc. Those tiny glyphs OCR as random letters that
+    //      get mashed into the URL (e.g., a Sharepoint logo reading as "S").
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    const cropX = Math.floor(vw * 0.05);
-    const cropW = Math.floor(vw * 0.90);
-    const cropY = Math.floor(vh * 0.40);
-    const cropH = Math.floor(vh * 0.20);
+    const cropX = Math.floor(vw * 0.22);
+    const cropW = Math.floor(vw * 0.73);
+    const cropY = Math.floor(vh * 0.46);
+    const cropH = Math.floor(vh * 0.08);
 
     // 2) SCALE UP — Tesseract works best on text that's ~30-50px tall. A phone
     //    pointed at a screen often gives smaller text than that. Scale 3x.
@@ -580,10 +584,10 @@ export default function Iota() {
                   <div
                     className="absolute border-2 border-amber-300/70 rounded-md"
                     style={{
-                      left: "5%",
+                      left: "22%",
                       right: "5%",
-                      top: "40%",
-                      height: "20%",
+                      top: "46%",
+                      height: "8%",
                     }}
                   />
                   {/* scanning line */}
@@ -632,7 +636,7 @@ export default function Iota() {
 
               <div className="text-center">
                 <p className="text-sm text-stone-600 italic mb-4">
-                  Frame the address bar. Tap to focus.
+                  Aim the URL inside the box. Tap to focus.
                 </p>
                 <button
                   onClick={cancelScan}
