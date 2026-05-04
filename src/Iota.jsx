@@ -214,10 +214,9 @@ export default function Iota() {
         },
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      // Important: set status first so the video element renders. We attach the stream
+      // in a useEffect below once the ref is populated. iOS Safari requires the video
+      // element to exist BEFORE we set srcObject.
       setStatus("scanning");
     } catch (e) {
       setStatus("error");
@@ -230,6 +229,29 @@ export default function Iota() {
       }
     }
   };
+
+  // Attach the camera stream to the video element once both exist.
+  // iOS Safari needs the element mounted, muted, and playsinline before play().
+  useEffect(() => {
+    if (status === "scanning" && videoRef.current && streamRef.current) {
+      const video = videoRef.current;
+      video.srcObject = streamRef.current;
+      video.muted = true; // must be set before play() on iOS
+      video.setAttribute("playsinline", "true");
+      video.setAttribute("webkit-playsinline", "true");
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch((err) => {
+          // iOS may reject if not muted or not in a user gesture. Try once more.
+          video.muted = true;
+          video.play().catch(() => {
+            setStatus("error");
+            setErrorMsg("Couldn't start the camera preview. " + (err?.message || ""));
+          });
+        });
+      }
+    }
+  }, [status]);
 
   const cancelScan = () => {
     stopCamera();
@@ -361,7 +383,9 @@ export default function Iota() {
                   ref={videoRef}
                   className="absolute inset-0 w-full h-full object-cover"
                   playsInline
+                  webkit-playsinline="true"
                   muted
+                  autoPlay
                 />
                 {/* Viewfinder overlay */}
                 <div className="absolute inset-0 pointer-events-none">
