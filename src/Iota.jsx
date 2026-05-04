@@ -67,12 +67,12 @@ export default function Iota() {
         // Tune Tesseract for URLs:
         // - Restrict character set to URL-legal chars. Cuts hallucinated punctuation
         //   and weird unicode that mess up regex matching.
-        // - PSM 7 = "treat the image as a single text line" — perfect for an address
-        //   bar, and much faster than the default layout analysis.
+        // - PSM 6 = "assume a single uniform block of text". More forgiving than
+        //   PSM 7 (single line), which fails if the crop has any padding or noise.
         await worker.setParameters({
           tessedit_char_whitelist:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%",
-          tessedit_pageseg_mode: "7",
+          tessedit_pageseg_mode: "6",
         });
         workerRef.current = worker;
         tesseractReadyRef.current = true;
@@ -169,12 +169,12 @@ export default function Iota() {
     const vh = video.videoHeight;
     const cropX = Math.floor(vw * 0.05);
     const cropW = Math.floor(vw * 0.90);
-    const cropY = Math.floor(vh * 0.30);
-    const cropH = Math.floor(vh * 0.12);
+    const cropY = Math.floor(vh * 0.40);
+    const cropH = Math.floor(vh * 0.20);
 
     // 2) SCALE UP — Tesseract works best on text that's ~30-50px tall. A phone
-    //    pointed at a screen often gives smaller text than that. Scale 2x.
-    const scale = 2;
+    //    pointed at a screen often gives smaller text than that. Scale 3x.
+    const scale = 3;
     const outW = cropW * scale;
     const outH = cropH * scale;
     canvas.width = outW;
@@ -184,45 +184,27 @@ export default function Iota() {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
 
-    // 3) PREPROCESS: grayscale → contrast stretch → binarize (Otsu-ish global threshold).
-    //    This is what kills the "yellow page background confuses OCR" problem.
+    // 3) PREPROCESS: convert to grayscale and stretch contrast. This neutralises
+    //    color backgrounds (yellow/blue/etc) without destroying the text. We
+    //    deliberately do NOT binarize — Tesseract has its own internal thresholding
+    //    that's smarter than a single global threshold, and aggressive binarization
+    //    can erase faint or anti-aliased text.
     const img = ctx.getImageData(0, 0, outW, outH);
     const px = img.data;
-    // First pass: convert to grayscale and build a histogram for threshold selection.
-    const hist = new Uint32Array(256);
+    // First pass: grayscale + find min/max for contrast stretch.
+    let minV = 255, maxV = 0;
     const gray = new Uint8ClampedArray(px.length / 4);
     for (let i = 0, j = 0; i < px.length; i += 4, j++) {
-      // luminance weighted average — better than naive mean for text contrast
       const g = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) | 0;
       gray[j] = g;
-      hist[g]++;
+      if (g < minV) minV = g;
+      if (g > maxV) maxV = g;
     }
-    // Otsu's method: pick the threshold that maximises between-class variance.
-    let total = gray.length;
-    let sum = 0;
-    for (let t = 0; t < 256; t++) sum += t * hist[t];
-    let sumB = 0, wB = 0, varMax = 0, threshold = 127;
-    for (let t = 0; t < 256; t++) {
-      wB += hist[t];
-      if (wB === 0) continue;
-      const wF = total - wB;
-      if (wF === 0) break;
-      sumB += t * hist[t];
-      const mB = sumB / wB;
-      const mF = (sum - sumB) / wF;
-      const between = wB * wF * (mB - mF) * (mB - mF);
-      if (between > varMax) { varMax = between; threshold = t; }
-    }
-    // Decide polarity: address bars are usually dark text on light background, but
-    // some dark-mode browsers invert that. Sample whether the majority is above
-    // threshold (light bg) or below (dark bg) and binarize accordingly.
-    let lightCount = 0;
-    for (let i = 0; i < gray.length; i++) if (gray[i] > threshold) lightCount++;
-    const darkBg = lightCount < gray.length / 2;
+    // Stretch the grayscale range to full 0-255 for better contrast.
+    const range = Math.max(1, maxV - minV);
     for (let i = 0, j = 0; i < px.length; i += 4, j++) {
-      const isText = darkBg ? gray[j] > threshold : gray[j] < threshold;
-      const v = isText ? 0 : 255; // text → black, bg → white (Tesseract prefers this)
-      px[i] = v; px[i + 1] = v; px[i + 2] = v;
+      const stretched = ((gray[j] - minV) * 255 / range) | 0;
+      px[i] = stretched; px[i + 1] = stretched; px[i + 2] = stretched;
     }
     ctx.putImageData(img, 0, 0);
 
@@ -478,12 +460,12 @@ export default function Iota() {
                   <div className="absolute bottom-6 right-6 w-8 h-8 border-b-2 border-r-2 border-amber-300/80" />
                   {/* target band — must match the crop ratios in captureAndScan */}
                   <div
-                    className="absolute border border-amber-300/60 rounded-md"
+                    className="absolute border-2 border-amber-300/70 rounded-md"
                     style={{
                       left: "5%",
                       right: "5%",
-                      top: "30%",
-                      height: "12%",
+                      top: "40%",
+                      height: "20%",
                     }}
                   />
                   {/* scanning line */}
