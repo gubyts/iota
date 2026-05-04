@@ -308,56 +308,30 @@ export default function Iota() {
     }
     ctx.putImageData(img, 0, 0);
 
-    // 5) MULTI-PASS OCR. Try the contrast-stretched grayscale first. If it doesn't
-    //    yield a URL, run a second pass with a 3x3 unsharp-mask sharpened version.
-    //    This roughly doubles per-frame OCR cost but dramatically improves recall
-    //    on weaker cameras where source frames have soft focus.
-    const tryRecognize = async () => {
-      try {
-        const { data } = await workerRef.current.recognize(canvas);
-        const urls = extractUrls(data.text || "");
-        return urls.length > 0 ? urls[0] : null;
-      } catch { return null; }
-    };
-
-    let url = await tryRecognize();
+    // 5) SINGLE-PASS OCR. One recognition per frame keeps the loop fast.
+    //    Earlier we ran a second sharpened pass — too slow in practice.
+    let url = null;
+    try {
+      const { data } = await workerRef.current.recognize(canvas);
+      const urls = extractUrls(data.text || "");
+      if (urls.length > 0) url = urls[0];
+    } catch { /* skip frame */ }
     setScanCount(c => c + 1);
 
-    if (!url) {
-      // Apply a sharpening kernel (unsharp mask) and try again.
-      const sharp = ctx.getImageData(0, 0, w, h);
-      const sp = sharp.data;
-      const orig = new Uint8ClampedArray(sp.length);
-      orig.set(sp);
-      // 3x3 sharpen kernel: center 5, edges -1, corners 0
-      for (let y = 1; y < h - 1; y++) {
-        for (let x = 1; x < w - 1; x++) {
-          const i = (y * w + x) * 4;
-          const c = orig[i];
-          const n = orig[i - w * 4];
-          const s = orig[i + w * 4];
-          const e = orig[i - 4];
-          const we = orig[i + 4];
-          const v = Math.max(0, Math.min(255, 5 * c - n - s - e - we));
-          sp[i] = v; sp[i + 1] = v; sp[i + 2] = v;
-        }
-      }
-      ctx.putImageData(sharp, 0, 0);
-      url = await tryRecognize();
-      setScanCount(c => c + 1);
-    }
-
     if (url) {
-      // Voting: require at least 2 frames to agree on the hostname before locking
-      // in. This filters out one-off OCR misreads (e.g., "udyfinds" vs "studyfinds")
-      // because they won't be reproduced consistently — only the correct read will.
+      // Confidence-based locking:
+      // - High-confidence reads (clean lowercase, common TLD, scoreUrl >= 6) → lock in immediately
+      // - Lower-confidence reads → require one more matching frame to confirm
       try {
         const host = new URL(url).hostname;
+        const conf = scoreUrl(url);
+        if (conf >= 6) {
+          handleFound(url);
+          return;
+        }
         const votes = votesRef.current;
         votes.set(host, (votes.get(host) || 0) + 1);
-        // Track the most-voted candidate's full URL.
-        const count = votes.get(host);
-        if (count >= 2) {
+        if (votes.get(host) >= 2) {
           handleFound(url);
           return;
         }
@@ -365,7 +339,7 @@ export default function Iota() {
     }
 
     if (status === "scanning") {
-      scanLoopRef.current = setTimeout(captureAndScan, 250);
+      scanLoopRef.current = setTimeout(captureAndScan, 150);
     }
   }, [status, handleFound]);
 
