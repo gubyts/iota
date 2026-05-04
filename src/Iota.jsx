@@ -52,6 +52,8 @@ export default function Iota() {
   const [redirectIn, setRedirectIn] = useState(null);
   const [scanCount, setScanCount] = useState(0);
   const [copied, setCopied] = useState(null); // null=not attempted, true=ok, false=failed
+  const [sharpness, setSharpness] = useState(0); // 0-1 estimated focus quality
+  const [focusPulse, setFocusPulse] = useState(null); // {x, y, key} for tap-to-focus indicator
 
   // Spin up a persistent Tesseract worker once. Reusing it across frames is dramatically
   // faster than calling Tesseract.recognize from scratch each scan.
@@ -150,6 +152,35 @@ export default function Iota() {
     scanLoopRef.current = setTimeout(tick, 1000);
   }, [stopCamera, copyToClipboard]);
 
+  // Tap-to-focus: send a focus point hint to the camera, fire visual pulse.
+  // iOS Safari accepts pointsOfInterest in MediaTrackConstraints on iOS 16+.
+  const handleVideoTap = useCallback(async (e) => {
+    if (!videoRef.current || !streamRef.current) return;
+    const rect = videoRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;   // 0..1
+    const y = (e.clientY - rect.top) / rect.height;   // 0..1
+    setFocusPulse({ x: e.clientX - rect.left, y: e.clientY - rect.top, key: Date.now() });
+
+    try {
+      const track = streamRef.current.getVideoTracks()[0];
+      if (track && track.applyConstraints) {
+        // Re-trigger AF/AE by toggling out of continuous and applying a focus point.
+        await track.applyConstraints({
+          advanced: [
+            { focusMode: "single-shot", pointsOfInterest: [{ x, y }] },
+            { exposureMode: "single-shot", pointsOfInterest: [{ x, y }] },
+          ],
+        }).catch(() => {});
+        // After ~1.5s, return to continuous so it keeps tracking.
+        setTimeout(() => {
+          track.applyConstraints({
+            advanced: [{ focusMode: "continuous" }, { exposureMode: "continuous" }],
+          }).catch(() => {});
+        }, 1500);
+      }
+    } catch { /* noop */ }
+  }, []);
+
   const captureAndScan = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current || !workerRef.current) return;
     if (status !== "scanning") return;
@@ -163,7 +194,6 @@ export default function Iota() {
     }
 
     // 1) CROP to the target band where the user is aiming the address bar.
-    //    The viewfinder shows a horizontal rectangle at ~1/3 from the top, padded 6 from sides.
     //    These ratios match the JSX overlay below.
     const vw = video.videoWidth;
     const vh = video.videoHeight;
@@ -184,23 +214,48 @@ export default function Iota() {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
 
-    // 3) PREPROCESS: convert to grayscale and stretch contrast. This neutralises
-    //    color backgrounds (yellow/blue/etc) without destroying the text. We
-    //    deliberately do NOT binarize — Tesseract has its own internal thresholding
-    //    that's smarter than a single global threshold, and aggressive binarization
-    //    can erase faint or anti-aliased text.
+    // 3) MEASURE SHARPNESS via the variance of the Laplacian. Blurry images have
+    //    low variance; sharp ones have high. We use this to skip wasted OCR runs
+    //    on frames where the camera hasn't focused yet.
     const img = ctx.getImageData(0, 0, outW, outH);
     const px = img.data;
-    // First pass: grayscale + find min/max for contrast stretch.
+    const w = outW, h = outH;
+    const gray = new Uint8ClampedArray(w * h);
     let minV = 255, maxV = 0;
-    const gray = new Uint8ClampedArray(px.length / 4);
     for (let i = 0, j = 0; i < px.length; i += 4, j++) {
       const g = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) | 0;
       gray[j] = g;
       if (g < minV) minV = g;
       if (g > maxV) maxV = g;
     }
-    // Stretch the grayscale range to full 0-255 for better contrast.
+
+    // Subsample the Laplacian (every 4th pixel) for speed. We just need a relative
+    // signal, not a precise value. Operating on grayscale.
+    let lapSum = 0, lapSumSq = 0, lapCount = 0;
+    for (let y = 1; y < h - 1; y += 4) {
+      for (let x = 1; x < w - 1; x += 4) {
+        const i = y * w + x;
+        const lap = -gray[i - w] - gray[i - 1] + 4 * gray[i] - gray[i + 1] - gray[i + w];
+        lapSum += lap;
+        lapSumSq += lap * lap;
+        lapCount++;
+      }
+    }
+    const lapMean = lapSum / lapCount;
+    const lapVar = lapSumSq / lapCount - lapMean * lapMean;
+    // Empirical: typical phone-of-screen captures: blurry < 100, OK > 300, sharp > 800.
+    const sharpScore = Math.min(1, lapVar / 600);
+    setSharpness(sharpScore);
+
+    // Skip OCR if frame is too blurry — saves CPU, lets autofocus catch up.
+    if (lapVar < 80) {
+      if (status === "scanning") {
+        scanLoopRef.current = setTimeout(captureAndScan, 200);
+      }
+      return;
+    }
+
+    // 4) PREPROCESS: contrast-stretched grayscale. Gentle, doesn't destroy text.
     const range = Math.max(1, maxV - minV);
     for (let i = 0, j = 0; i < px.length; i += 4, j++) {
       const stretched = ((gray[j] - minV) * 255 / range) | 0;
@@ -208,20 +263,52 @@ export default function Iota() {
     }
     ctx.putImageData(img, 0, 0);
 
-    try {
-      const { data } = await workerRef.current.recognize(canvas);
-      setScanCount(c => c + 1);
-      const urls = extractUrls(data.text || "");
-      if (urls.length > 0) {
-        handleFound(urls[0]);
-        return;
+    // 5) MULTI-PASS OCR. Try the contrast-stretched grayscale first. If it doesn't
+    //    yield a URL, run a second pass with a 3x3 unsharp-mask sharpened version.
+    //    This roughly doubles per-frame OCR cost but dramatically improves recall
+    //    on weaker cameras where source frames have soft focus.
+    const tryRecognize = async () => {
+      try {
+        const { data } = await workerRef.current.recognize(canvas);
+        const urls = extractUrls(data.text || "");
+        return urls.length > 0 ? urls[0] : null;
+      } catch { return null; }
+    };
+
+    let url = await tryRecognize();
+    setScanCount(c => c + 1);
+
+    if (!url) {
+      // Apply a sharpening kernel (unsharp mask) and try again.
+      const sharp = ctx.getImageData(0, 0, w, h);
+      const sp = sharp.data;
+      const orig = new Uint8ClampedArray(sp.length);
+      orig.set(sp);
+      // 3x3 sharpen kernel: center 5, edges -1, corners 0
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = (y * w + x) * 4;
+          const c = orig[i];
+          const n = orig[i - w * 4];
+          const s = orig[i + w * 4];
+          const e = orig[i - 4];
+          const we = orig[i + 4];
+          const v = Math.max(0, Math.min(255, 5 * c - n - s - e - we));
+          sp[i] = v; sp[i + 1] = v; sp[i + 2] = v;
+        }
       }
-    } catch (e) {
-      // single-frame failure — keep going
+      ctx.putImageData(sharp, 0, 0);
+      url = await tryRecognize();
+      setScanCount(c => c + 1);
+    }
+
+    if (url) {
+      handleFound(url);
+      return;
     }
 
     if (status === "scanning") {
-      scanLoopRef.current = setTimeout(captureAndScan, 350);
+      scanLoopRef.current = setTimeout(captureAndScan, 250);
     }
   }, [status, handleFound]);
 
@@ -241,6 +328,8 @@ export default function Iota() {
     setRedirectIn(null);
     setScanCount(0);
     setCopied(null);
+    setSharpness(0);
+    setFocusPulse(null);
 
     if (!tesseractReadyRef.current) {
       setStatus("loading");
@@ -259,10 +348,31 @@ export default function Iota() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: 2560 },
+          height: { ideal: 1440 },
+          // Hint to the browser to prefer a continuous-AF camera mode. iOS doesn't
+          // expose all of these, but the ones it ignores are harmless.
+          focusMode: { ideal: "continuous" },
+          exposureMode: { ideal: "continuous" },
+          whiteBalanceMode: { ideal: "continuous" },
+          frameRate: { ideal: 30 },
         },
       });
+
+      // Try to apply advanced constraints after the stream starts. Some iOS versions
+      // accept these via applyConstraints even when they reject them in getUserMedia.
+      try {
+        const track = stream.getVideoTracks()[0];
+        if (track && track.applyConstraints) {
+          await track.applyConstraints({
+            advanced: [
+              { focusMode: "continuous" },
+              { exposureMode: "continuous" },
+              { whiteBalanceMode: "continuous" },
+            ],
+          }).catch(() => {});
+        }
+      } catch { /* noop — many browsers don't support advanced constraints */ }
       streamRef.current = stream;
       // Important: set status first so the video element renders. We attach the stream
       // in a useEffect below once the ref is populated. iOS Safari requires the video
@@ -360,6 +470,11 @@ export default function Iota() {
           0% { transform: translateY(0%); }
           100% { transform: translateY(100%); }
         }
+        @keyframes focus-pulse {
+          0% { transform: scale(1.3); opacity: 0; }
+          30% { opacity: 1; }
+          100% { transform: scale(0.6); opacity: 0; }
+        }
         @keyframes fade-up {
           from { opacity: 0; transform: translateY(8px); }
           to { opacity: 1; transform: translateY(0); }
@@ -442,10 +557,13 @@ export default function Iota() {
 
           {status === "scanning" && (
             <div className="fade-up space-y-4">
-              <div className="relative aspect-[3/4] rounded-3xl overflow-hidden bg-stone-900">
+              <div
+                className="relative aspect-[3/4] rounded-3xl overflow-hidden bg-stone-900 cursor-pointer select-none"
+                onClick={handleVideoTap}
+              >
                 <video
                   ref={videoRef}
-                  className="absolute inset-0 w-full h-full object-cover"
+                  className="absolute inset-0 w-full h-full object-cover pointer-events-none"
                   playsInline
                   webkit-playsinline="true"
                   muted
@@ -473,9 +591,21 @@ export default function Iota() {
                     className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-amber-300 to-transparent"
                     style={{ animation: "scan-line 2s linear infinite", top: 0 }}
                   />
+                  {/* tap-to-focus pulse */}
+                  {focusPulse && (
+                    <div
+                      key={focusPulse.key}
+                      className="absolute w-16 h-16 -ml-8 -mt-8 rounded-full border-2 border-amber-300"
+                      style={{
+                        left: focusPulse.x,
+                        top: focusPulse.y,
+                        animation: "focus-pulse 0.8s ease-out forwards",
+                      }}
+                    />
+                  )}
                 </div>
-                {/* Status pill */}
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-stone-900/80 backdrop-blur-md border border-stone-700">
+                {/* Status pill with sharpness meter */}
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-4 py-2 rounded-full bg-stone-900/80 backdrop-blur-md border border-stone-700">
                   <span className="relative flex h-2 w-2">
                     <span className="absolute inline-flex h-full w-full rounded-full bg-amber-300" style={{ animation: "pulse-ring 1.5s infinite" }} />
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-300" />
@@ -483,12 +613,26 @@ export default function Iota() {
                   <span className="mono text-[10px] tracking-widest uppercase text-stone-200">
                     reading · {scanCount}
                   </span>
+                  <span className="w-px h-3 bg-stone-700" />
+                  {/* sharpness bars */}
+                  <div className="flex items-end gap-0.5 h-3" aria-label="focus quality">
+                    {[0.2, 0.4, 0.6, 0.8].map((thresh, i) => (
+                      <span
+                        key={i}
+                        className="w-0.5 rounded-full transition-colors"
+                        style={{
+                          height: `${(i + 1) * 25}%`,
+                          backgroundColor: sharpness > thresh ? "#fcd34d" : "#44403c",
+                        }}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
 
               <div className="text-center">
                 <p className="text-sm text-stone-600 italic mb-4">
-                  Hold steady. Frame the address bar.
+                  Frame the address bar. Tap to focus.
                 </p>
                 <button
                   onClick={cancelScan}
