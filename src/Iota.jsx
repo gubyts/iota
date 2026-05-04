@@ -87,6 +87,8 @@ export default function Iota() {
   const workerRef = useRef(null);
   const scanLoopRef = useRef(null);
   const votesRef = useRef(new Map()); // hostname -> count of frames that agreed
+  const scanStartRef = useRef(0); // timestamp when scanning started
+  const bestCandidateRef = useRef(null); // {url, score} — fallback if budget expires
 
   const [status, setStatus] = useState("idle"); // idle | loading | scanning | found | error
   const [errorMsg, setErrorMsg] = useState("");
@@ -318,14 +320,24 @@ export default function Iota() {
     } catch { /* skip frame */ }
     setScanCount(c => c + 1);
 
+    const elapsed = Date.now() - scanStartRef.current;
+
     if (url) {
-      // Confidence-based locking:
-      // - High-confidence reads (clean lowercase, common TLD, scoreUrl >= 6) → lock in immediately
-      // - Lower-confidence reads → require one more matching frame to confirm
       try {
         const host = new URL(url).hostname;
         const conf = scoreUrl(url);
-        if (conf >= 6) {
+
+        // Track the best candidate we've seen. If the time budget runs out,
+        // we'll fall back to this rather than scanning forever.
+        const best = bestCandidateRef.current;
+        if (!best || conf > best.score) {
+          bestCandidateRef.current = { url, score: conf };
+        }
+
+        // Confidence-based locking:
+        // - Reads scoring >= 5 (lowercase domain + common TLD = baseline good) lock in immediately
+        // - Lower-confidence reads need one more matching frame
+        if (conf >= 5) {
           handleFound(url);
           return;
         }
@@ -336,6 +348,14 @@ export default function Iota() {
           return;
         }
       } catch { /* malformed url, skip */ }
+    }
+
+    // Time budget: if we've been scanning > 4 seconds without locking in, accept
+    // whatever the best candidate so far was. Sub-optimal but bounded — user gets
+    // a result, can retry with "again" if it's wrong. Far better than scanning forever.
+    if (elapsed > 4000 && bestCandidateRef.current) {
+      handleFound(bestCandidateRef.current.url);
+      return;
     }
 
     if (status === "scanning") {
@@ -362,6 +382,8 @@ export default function Iota() {
     setSharpness(0);
     setFocusPulse(null);
     votesRef.current = new Map();
+    bestCandidateRef.current = null;
+    scanStartRef.current = Date.now();
 
     if (!tesseractReadyRef.current) {
       setStatus("loading");
