@@ -1,0 +1,13 @@
+{
+  "name": "iota",
+  "short_name": "iota",
+  "description": "bridge a webpage from your computer to your phone",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf8f3",
+  "theme_color": "#faf8f3",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
