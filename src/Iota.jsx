@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Camera, Link as LinkIcon, Loader2, X, Check, AlertCircle, Zap, Copy } from "lucide-react";
+import { Camera, Link as LinkIcon, Loader2, X, Check, AlertCircle, Zap, Share2 } from "lucide-react";
 import { createWorker } from "tesseract.js";
 
 // iota — bridge a webpage from your computer to your phone via camera + OCR.
@@ -270,8 +270,22 @@ export default function Iota() {
     setRedirectIn(null);
   };
 
-  const handleManualCopy = async () => {
+  const handleShare = async () => {
     if (!foundUrl) return;
+    // Use the native iOS / Android share sheet when available
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "iota",
+          url: foundUrl,
+        });
+        return;
+      } catch (e) {
+        // User cancelled the share sheet, or share failed — fall through to copy
+        if (e?.name === "AbortError") return;
+      }
+    }
+    // Fallback for desktop or unsupported browsers
     const ok = await copyToClipboard(foundUrl);
     setCopied(ok);
   };
@@ -482,11 +496,11 @@ export default function Iota() {
                     open now
                   </button>
                   <button
-                    onClick={handleManualCopy}
+                    onClick={handleShare}
                     className="px-4 bg-stone-100 text-stone-700 rounded-xl py-3 text-sm hover:bg-stone-200 transition-colors flex items-center justify-center gap-2"
-                    aria-label="copy url"
+                    aria-label="share url"
                   >
-                    <Copy className="w-4 h-4" strokeWidth={1.5} />
+                    <Share2 className="w-4 h-4" strokeWidth={1.5} />
                   </button>
                   <button
                     onClick={() => { setStatus("idle"); setFoundUrl(null); setRedirectIn(null); setCopied(null); }}
