@@ -9,6 +9,13 @@ import { createWorker } from "tesseract.js";
 // OCR output is messy, so we accept a wide net then sanitize.
 const URL_REGEX = /\b((?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z]{2,})+(?:\/[^\s]*)?)\b/gi;
 
+// Common TLDs we trust most — when scoring candidates, ones ending in these (or
+// containing one followed by a slash) outrank random ones Tesseract hallucinated.
+const COMMON_TLDS = [
+  "com", "org", "net", "io", "co", "gov", "edu", "app", "dev", "ai", "uk", "us",
+  "ca", "de", "fr", "jp", "au", "info", "biz", "me", "tv", "xyz", "site",
+];
+
 const COMMON_OCR_FIXES = [
   [/\s+/g, ""],          // strip stray spaces inside URL
   [/[,;]+$/g, ""],       // trailing punctuation
@@ -28,13 +35,48 @@ function cleanUrl(raw) {
   }
 }
 
+// Score a URL candidate. Higher = more likely a real URL.
+// Penalizes uppercase-leading domains (favicon smush), short hostnames, weird TLDs.
+// Rewards lowercase, common TLDs, and the presence of a path (more signal).
+function scoreUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname;
+    let score = 0;
+    // host parts
+    const parts = host.split(".");
+    const tld = parts[parts.length - 1].toLowerCase();
+    if (COMMON_TLDS.includes(tld)) score += 3;
+    if (host.length >= 6 && host.length <= 50) score += 1;
+    // lowercase domains are normal; uppercase first letter is a smoking gun
+    // for "favicon glyph fused into the first letter of the URL"
+    if (/^[a-z]/.test(host)) score += 2;
+    if (/^[A-Z]/.test(host)) score -= 2;
+    // mostly lowercase host
+    const upperRatio = (host.match(/[A-Z]/g) || []).length / host.length;
+    if (upperRatio < 0.1) score += 1;
+    // having a path adds signal that this is a real navigated URL
+    if (u.pathname && u.pathname.length > 1) score += 1;
+    return score;
+  } catch { return -10; }
+}
+
 function extractUrls(text) {
   const matches = text.match(URL_REGEX) || [];
-  const cleaned = matches
-    .map(cleanUrl)
-    .filter(Boolean);
-  // de-dupe while preserving order
-  return [...new Set(cleaned)];
+  const candidates = new Set();
+  for (const m of matches) {
+    const c = cleanUrl(m);
+    if (c) candidates.add(c);
+    // Also try trimming the first character — recovers "Sstudyfinds.com" → "studyfinds.com"
+    // when a favicon glyph fused into the leading letter. Only trim once; trimming
+    // more is too aggressive and starts mangling legit URLs.
+    if (m.length > 8) {
+      const trimmed = cleanUrl(m.slice(1));
+      if (trimmed) candidates.add(trimmed);
+    }
+  }
+  // Sort by score descending — best candidate wins.
+  return [...candidates].sort((a, b) => scoreUrl(b) - scoreUrl(a));
 }
 
 export default function Iota() {
@@ -44,6 +86,7 @@ export default function Iota() {
   const tesseractReadyRef = useRef(false);
   const workerRef = useRef(null);
   const scanLoopRef = useRef(null);
+  const votesRef = useRef(new Map()); // hostname -> count of frames that agreed
 
   const [status, setStatus] = useState("idle"); // idle | loading | scanning | found | error
   const [errorMsg, setErrorMsg] = useState("");
@@ -193,18 +236,16 @@ export default function Iota() {
       return;
     }
 
-    // 1) CROP to a tight band where the URL text actually lives.
-    //    - Vertical: thin band, just one line of text. Wider bands pick up tab
-    //      rows, favicons stacked above, and other UI chrome.
-    //    - Horizontal: skip the leftmost ~20% to exclude the favicon, lock icon,
-    //      site-info button, etc. Those tiny glyphs OCR as random letters that
-    //      get mashed into the URL (e.g., a Sharepoint logo reading as "S").
+    // 1) CROP to a band sized for one line of address-bar text.
+    //    Wide enough to capture full URLs (long paths run off the right side, which
+    //    is OK — we'll still get the domain). We don't try to exclude favicons by
+    //    cropping; instead we sanitize the OCR output to ignore leading garbage.
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    const cropX = Math.floor(vw * 0.22);
-    const cropW = Math.floor(vw * 0.73);
-    const cropY = Math.floor(vh * 0.46);
-    const cropH = Math.floor(vh * 0.08);
+    const cropX = Math.floor(vw * 0.05);
+    const cropW = Math.floor(vw * 0.90);
+    const cropY = Math.floor(vh * 0.45);
+    const cropH = Math.floor(vh * 0.10);
 
     // 2) SCALE UP — Tesseract works best on text that's ~30-50px tall. A phone
     //    pointed at a screen often gives smaller text than that. Scale 3x.
@@ -307,8 +348,20 @@ export default function Iota() {
     }
 
     if (url) {
-      handleFound(url);
-      return;
+      // Voting: require at least 2 frames to agree on the hostname before locking
+      // in. This filters out one-off OCR misreads (e.g., "udyfinds" vs "studyfinds")
+      // because they won't be reproduced consistently — only the correct read will.
+      try {
+        const host = new URL(url).hostname;
+        const votes = votesRef.current;
+        votes.set(host, (votes.get(host) || 0) + 1);
+        // Track the most-voted candidate's full URL.
+        const count = votes.get(host);
+        if (count >= 2) {
+          handleFound(url);
+          return;
+        }
+      } catch { /* malformed url, skip */ }
     }
 
     if (status === "scanning") {
@@ -334,6 +387,7 @@ export default function Iota() {
     setCopied(null);
     setSharpness(0);
     setFocusPulse(null);
+    votesRef.current = new Map();
 
     if (!tesseractReadyRef.current) {
       setStatus("loading");
@@ -584,10 +638,10 @@ export default function Iota() {
                   <div
                     className="absolute border-2 border-amber-300/70 rounded-md"
                     style={{
-                      left: "22%",
+                      left: "5%",
                       right: "5%",
-                      top: "46%",
-                      height: "8%",
+                      top: "45%",
+                      height: "10%",
                     }}
                   />
                   {/* scanning line */}
