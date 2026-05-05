@@ -578,12 +578,13 @@ export default function Iota() {
       className="min-h-screen w-full text-stone-900"
       style={{
         background: "radial-gradient(ellipse at top, #faf8f3 0%, #f0ebe0 100%)",
-        fontFamily: "'Fraunces', 'Cormorant Garamond', Georgia, serif",
+        fontFamily: "'Italiana', 'Cormorant Garamond', Georgia, serif",
       }}
     >
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Italiana&family=JetBrains+Mono:wght@400;500&display=swap');
         .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+        .display { font-family: 'Italiana', 'Cormorant Garamond', Georgia, serif; letter-spacing: 0.01em; }
         @keyframes pulse-ring {
           0% { transform: scale(0.95); opacity: 0.7; }
           70% { transform: scale(1.4); opacity: 0; }
@@ -623,12 +624,12 @@ export default function Iota() {
         {/* Header */}
         <header className="mb-12 fade-up">
           <div className="flex items-baseline gap-3 mb-2">
-            <h1 className="text-6xl font-light tracking-tight" style={{ fontFamily: "'Fraunces', serif", fontVariationSettings: "'opsz' 144" }}>
+            <h1 className="display text-7xl font-normal leading-none">
               iota
             </h1>
             <span className="mono text-xs text-stone-500 tracking-widest uppercase">v0.1</span>
           </div>
-          <p className="text-stone-600 text-base leading-relaxed max-w-xs italic font-light">
+          <p className="text-stone-600 text-base leading-relaxed max-w-xs font-light">
             point your phone at a webpage. it'll come with you.
           </p>
         </header>
@@ -636,36 +637,29 @@ export default function Iota() {
         {/* Main interaction area */}
         <main className="space-y-6">
           {status === "idle" && (
-            <div className="fade-up space-y-8">
-              <button
-                onClick={startScan}
-                className="group relative w-full aspect-square rounded-3xl bg-stone-900 text-stone-50 flex flex-col items-center justify-center gap-4 hover:bg-stone-800 transition-all overflow-hidden"
-                style={{ boxShadow: "0 30px 60px -20px rgba(40, 30, 20, 0.4)" }}
-              >
-                <div className="absolute inset-0 opacity-20" style={{
-                  backgroundImage: "radial-gradient(circle at 30% 30%, rgba(255,200,150,0.3) 0%, transparent 50%)"
-                }} />
-                <Camera className="w-10 h-10 stroke-1" strokeWidth={1.2} />
-                <span className="text-xl font-light tracking-wide">scan a screen</span>
-                <span className="mono text-[10px] text-stone-400 tracking-widest uppercase absolute bottom-6">
-                  tap to begin
-                </span>
-              </button>
-
-              <div className="space-y-3 text-sm text-stone-600 leading-relaxed">
-                <div className="flex items-start gap-3">
-                  <span className="mono text-xs text-stone-400 mt-0.5 w-4">01</span>
+            <div className="fade-up space-y-10">
+              <div className="space-y-4 text-sm text-stone-600 leading-relaxed">
+                <div className="flex items-start gap-4">
+                  <span className="mono text-[10px] text-stone-400 mt-1 tracking-widest">01</span>
                   <span>Open the page on your computer.</span>
                 </div>
-                <div className="flex items-start gap-3">
-                  <span className="mono text-xs text-stone-400 mt-0.5 w-4">02</span>
+                <div className="flex items-start gap-4">
+                  <span className="mono text-[10px] text-stone-400 mt-1 tracking-widest">02</span>
                   <span>Aim your phone at the address bar.</span>
                 </div>
-                <div className="flex items-start gap-3">
-                  <span className="mono text-xs text-stone-400 mt-0.5 w-4">03</span>
+                <div className="flex items-start gap-4">
+                  <span className="mono text-[10px] text-stone-400 mt-1 tracking-widest">03</span>
                   <span>iota reads the URL and opens it here.</span>
                 </div>
               </div>
+
+              <button
+                onClick={startScan}
+                className="group w-full rounded-full bg-stone-900 text-stone-50 px-6 py-4 flex items-center justify-center gap-3 hover:bg-stone-800 transition-colors"
+              >
+                <Camera className="w-4 h-4" strokeWidth={1.5} />
+                <span className="text-sm tracking-wide font-light">scan a screen</span>
+              </button>
             </div>
           )}
 
