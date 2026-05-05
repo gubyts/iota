@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Camera, Link as LinkIcon, Loader2, X, Check, AlertCircle, Zap, Share2 } from "lucide-react";
-import { createWorker } from "tesseract.js";
+import { Camera, Link as LinkIcon, Check, AlertCircle, Zap, Share2 } from "lucide-react";
 import { TOP_DOMAINS, correctDomain } from "./topDomains.js";
 
 // iota — bridge a webpage from your computer to your phone via camera + OCR.
@@ -108,15 +107,13 @@ export default function Iota() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const tesseractReadyRef = useRef(false);
-  const workerRef = useRef(null);
   const scanLoopRef = useRef(null);
   const votesRef = useRef(new Map()); // hostname -> count of frames that agreed
   const scanStartRef = useRef(0); // timestamp when scanning started
   const bestCandidateRef = useRef(null); // {url, score} — fallback if budget expires
   const skipCountRef = useRef(0); // consecutive frames skipped by the sharpness gate
 
-  const [status, setStatus] = useState("idle"); // idle | loading | scanning | found | needsRetry | error
+  const [status, setStatus] = useState("idle"); // idle | scanning | found | needsRetry | error
   const [errorMsg, setErrorMsg] = useState("");
   const [foundUrl, setFoundUrl] = useState(null);
   const [history, setHistory] = useState([]);
@@ -126,44 +123,29 @@ export default function Iota() {
   const [sharpness, setSharpness] = useState(0); // 0-1 estimated focus quality
   const [focusPulse, setFocusPulse] = useState(null); // {x, y, key} for tap-to-focus indicator
 
-  // Spin up a persistent Tesseract worker once. Reusing it across frames is dramatically
-  // faster than calling Tesseract.recognize from scratch each scan.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const worker = await createWorker("eng");
-        if (cancelled) {
-          await worker.terminate();
-          return;
-        }
-        // Tune Tesseract for URLs:
-        // - Restrict character set to URL-legal chars. Cuts hallucinated punctuation
-        //   and weird unicode that mess up regex matching.
-        // - PSM 6 = "assume a single uniform block of text". More forgiving than
-        //   PSM 7 (single line), which fails when the crop has any padding,
-        //   tab-strip bleed, or the URL line wraps in a narrow window.
-        await worker.setParameters({
-          tessedit_char_whitelist:
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%",
-          tessedit_pageseg_mode: "6",
-        });
-        workerRef.current = worker;
-        tesseractReadyRef.current = true;
-      } catch (e) {
-        if (!cancelled) {
-          setStatus("error");
-          setErrorMsg("Couldn't load OCR engine. " + (e?.message || ""));
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (workerRef.current) {
-        workerRef.current.terminate().catch(() => {});
-        workerRef.current = null;
-      }
-    };
+  // OCR runs server-side via /api/ocr (Google Cloud Vision). No worker init
+  // needed in the browser — we just capture frames and POST them up.
+  const recognizeRemote = useCallback(async (canvas) => {
+    const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85));
+    if (!blob) return "";
+    const base64 = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onloadend = () => {
+        const result = fr.result || "";
+        const idx = String(result).indexOf(",");
+        resolve(idx >= 0 ? String(result).slice(idx + 1) : "");
+      };
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(blob);
+    });
+    const resp = await fetch("/api/ocr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: base64 }),
+    });
+    if (!resp.ok) throw new Error(`ocr ${resp.status}`);
+    const data = await resp.json();
+    return data.text || "";
   }, []);
 
   const stopCamera = useCallback(() => {
@@ -254,7 +236,7 @@ export default function Iota() {
   }, []);
 
   const captureAndScan = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || !workerRef.current) return;
+    if (!videoRef.current || !canvasRef.current) return;
     if (status !== "scanning") return;
 
     const video = videoRef.current;
@@ -265,10 +247,10 @@ export default function Iota() {
       return;
     }
 
-    // 1) CROP to a band sized for one line of address-bar text.
-    //    Wide enough to capture full URLs (long paths run off the right side, which
-    //    is OK — we'll still get the domain). We don't try to exclude favicons by
-    //    cropping; instead we sanitize the OCR output to ignore leading garbage.
+    // 1) CROP to a band sized for one line of address-bar text. Wide enough
+    //    to capture full URLs (long paths run off the right side, which is OK
+    //    — we'll still get the domain). The cropped band is what we send to
+    //    the Vision API: smaller payload, less noise, faster response.
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     const cropX = Math.floor(vw * 0.05);
@@ -276,35 +258,24 @@ export default function Iota() {
     const cropY = Math.floor(vh * 0.45);
     const cropH = Math.floor(vh * 0.10);
 
-    // 2) SCALE UP — Tesseract works best on text that's ~30-50px tall. A phone
-    //    pointed at a screen often gives smaller text than that. Scale 3x.
-    const scale = 3;
-    const outW = cropW * scale;
-    const outH = cropH * scale;
-    canvas.width = outW;
-    canvas.height = outH;
+    // No upscale: Vision handles small text well at native resolution and a
+    // 3x upscale would triple the JPEG payload for no accuracy gain.
+    canvas.width = cropW;
+    canvas.height = cropH;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-    // 3) MEASURE SHARPNESS via the variance of the Laplacian. Blurry images have
-    //    low variance; sharp ones have high. We use this to skip wasted OCR runs
-    //    on frames where the camera hasn't focused yet.
-    const img = ctx.getImageData(0, 0, outW, outH);
+    // 2) SHARPNESS GATE via Laplacian variance. Each Vision call is a network
+    //    round trip and costs money — don't waste one on a blurry frame.
+    //    Skip up to 3 frames in a row, then force a call so a borderline
+    //    stream still produces reads.
+    const img = ctx.getImageData(0, 0, cropW, cropH);
     const px = img.data;
-    const w = outW, h = outH;
+    const w = cropW, h = cropH;
     const gray = new Uint8ClampedArray(w * h);
-    let minV = 255, maxV = 0;
     for (let i = 0, j = 0; i < px.length; i += 4, j++) {
-      const g = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) | 0;
-      gray[j] = g;
-      if (g < minV) minV = g;
-      if (g > maxV) maxV = g;
+      gray[j] = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) | 0;
     }
-
-    // Subsample the Laplacian (every 4th pixel) for speed. We just need a relative
-    // signal, not a precise value. Operating on grayscale.
     let lapSum = 0, lapSumSq = 0, lapCount = 0;
     for (let y = 1; y < h - 1; y += 4) {
       for (let x = 1; x < w - 1; x += 4) {
@@ -317,16 +288,8 @@ export default function Iota() {
     }
     const lapMean = lapSum / lapCount;
     const lapVar = lapSumSq / lapCount - lapMean * lapMean;
-    // Empirical: typical phone-of-screen captures: blurry < 100, OK > 300, sharp > 800.
-    const sharpScore = Math.min(1, lapVar / 600);
-    setSharpness(sharpScore);
+    setSharpness(Math.min(1, lapVar / 600));
 
-    // Skip OCR if frame is too blurry — saves CPU, lets autofocus catch up.
-    // But cap how many frames in a row we skip: on phones in macro-lens mode,
-    // or in low light, the Laplacian variance can sit just below threshold for
-    // a long stretch and we end up never running OCR at all. After 3 skips,
-    // force a recognition pass — Tesseract still gets a useful read on
-    // borderline frames much of the time.
     if (lapVar < 60 && skipCountRef.current < 3) {
       skipCountRef.current++;
       if (status === "scanning") {
@@ -336,48 +299,13 @@ export default function Iota() {
     }
     skipCountRef.current = 0;
 
-    // 4) PREPROCESS: Otsu binarization with auto-inversion.
-    //    Tinted backgrounds (yellow news sites, off-white articles, dark mode
-    //    browsers) confuse Tesseract when handed a continuous grayscale ramp.
-    //    Otsu collapses the band into two pixel classes — text vs. background —
-    //    using the threshold that maximizes inter-class variance. We then flip
-    //    polarity if the result is light-on-dark so Tesseract always sees black
-    //    glyphs on a white background.
-    const hist = new Uint32Array(256);
-    for (let j = 0; j < gray.length; j++) hist[gray[j]]++;
-    const total = gray.length;
-    let sumAll = 0;
-    for (let t = 0; t < 256; t++) sumAll += t * hist[t];
-    let sumB = 0, wB = 0, varMax = 0, threshold = 127;
-    for (let t = 0; t < 256; t++) {
-      wB += hist[t];
-      if (wB === 0) continue;
-      const wF = total - wB;
-      if (wF === 0) break;
-      sumB += t * hist[t];
-      const mB = sumB / wB;
-      const mF = (sumAll - sumB) / wF;
-      const v = wB * wF * (mB - mF) * (mB - mF);
-      if (v > varMax) { varMax = v; threshold = t; }
-    }
-    let darkCount = 0;
-    for (let j = 0; j < gray.length; j++) if (gray[j] < threshold) darkCount++;
-    // If text glyphs are the *minority* class (light-on-dark layout), invert so
-    // glyphs land in the dark class, which is what Tesseract expects.
-    const invert = darkCount * 2 > total;
-    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
-      const dark = gray[j] < threshold;
-      const out = (dark !== invert) ? 0 : 255;
-      px[i] = out; px[i + 1] = out; px[i + 2] = out;
-    }
-    ctx.putImageData(img, 0, 0);
-
-    // 5) SINGLE-PASS OCR. One recognition per frame keeps the loop fast.
-    //    Earlier we ran a second sharpened pass — too slow in practice.
+    // 3) OCR via /api/ocr (Google Cloud Vision). One round trip per frame.
+    //    Vision is trained on natural images, so we send the raw cropped band
+    //    — no binarization, no contrast stretch.
     let url = null;
     try {
-      const { data } = await workerRef.current.recognize(canvas);
-      const urls = extractUrls(data.text || "");
+      const text = await recognizeRemote(canvas);
+      const urls = extractUrls(text);
       if (urls.length > 0) url = urls[0];
     } catch { /* skip frame */ }
     setScanCount(c => c + 1);
@@ -434,9 +362,11 @@ export default function Iota() {
     }
 
     if (status === "scanning") {
-      scanLoopRef.current = setTimeout(captureAndScan, 150);
+      // 600ms between frames — each scan is a network round trip to Vision,
+      // so going faster just queues up duplicate in-flight requests.
+      scanLoopRef.current = setTimeout(captureAndScan, 600);
     }
-  }, [status, handleFound]);
+  }, [status, handleFound, recognizeRemote, stopCamera]);
 
   // kick off the scan loop once status flips to scanning
   useEffect(() => {
@@ -460,19 +390,6 @@ export default function Iota() {
     bestCandidateRef.current = null;
     skipCountRef.current = 0;
     scanStartRef.current = Date.now();
-
-    if (!tesseractReadyRef.current) {
-      setStatus("loading");
-      // poll for readiness — first load downloads the language file (~10MB on cellular)
-      const wait = setInterval(() => {
-        if (tesseractReadyRef.current) {
-          clearInterval(wait);
-          startScan();
-        }
-      }, 200);
-      setTimeout(() => clearInterval(wait), 30000);
-      return;
-    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -667,15 +584,6 @@ export default function Iota() {
                 <Camera className="w-4 h-4" strokeWidth={1.5} />
                 <span className="text-sm tracking-wide font-light">scan a screen</span>
               </button>
-            </div>
-          )}
-
-          {status === "loading" && (
-            <div className="fade-up flex flex-col items-center justify-center py-20 gap-4">
-              <Loader2 className="w-6 h-6 animate-spin stroke-1" />
-              <p className="mono text-xs tracking-widest uppercase text-stone-500">
-                preparing optics
-              </p>
             </div>
           )}
 
