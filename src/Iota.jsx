@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Camera, Link as LinkIcon, Loader2, X, Check, AlertCircle, Zap, Share2 } from "lucide-react";
 import { createWorker } from "tesseract.js";
+import { TOP_DOMAINS, correctDomain } from "./topDomains.js";
 
 // iota — bridge a webpage from your computer to your phone via camera + OCR.
 // Aesthetic: refined minimalism. Serif display + clean mono. Lots of breathing room.
@@ -38,41 +39,65 @@ function cleanUrl(raw) {
 // Score a URL candidate. Higher = more likely a real URL.
 // Penalizes uppercase-leading domains (favicon smush), short hostnames, weird TLDs.
 // Rewards lowercase, common TLDs, and the presence of a path (more signal).
+// Big bonus when the host is in (or near) the curated top-domains dictionary —
+// that's our strongest signal that an OCR read corresponds to a real site.
 function scoreUrl(url) {
   try {
     const u = new URL(url);
-    const host = u.hostname;
+    const host = u.hostname.toLowerCase();
     let score = 0;
     // host parts
     const parts = host.split(".");
-    const tld = parts[parts.length - 1].toLowerCase();
+    const tld = parts[parts.length - 1];
     if (COMMON_TLDS.includes(tld)) score += 3;
     if (host.length >= 6 && host.length <= 50) score += 1;
-    // lowercase domains are normal; uppercase first letter is a smoking gun
-    // for "favicon glyph fused into the first letter of the URL"
-    if (/^[a-z]/.test(host)) score += 2;
-    if (/^[A-Z]/.test(host)) score -= 2;
+    // lowercase domains are normal; uppercase first letter on the un-lowered
+    // hostname is a smoking gun for favicon-glyph fusion
+    if (/^[a-z]/.test(u.hostname)) score += 2;
+    if (/^[A-Z]/.test(u.hostname)) score -= 2;
     // mostly lowercase host
-    const upperRatio = (host.match(/[A-Z]/g) || []).length / host.length;
+    const upperRatio = (u.hostname.match(/[A-Z]/g) || []).length / u.hostname.length;
     if (upperRatio < 0.1) score += 1;
     // having a path adds signal that this is a real navigated URL
     if (u.pathname && u.pathname.length > 1) score += 1;
+    // dictionary hit: exact match is decisive, near-match is strong
+    if (TOP_DOMAINS.has(host)) score += 5;
     return score;
   } catch { return -10; }
+}
+
+// Try to map a candidate URL onto a known domain. Returns the corrected URL
+// string (with original path/query preserved) or null if nothing close enough.
+function dictionaryCorrect(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    const host = u.hostname.toLowerCase();
+    if (TOP_DOMAINS.has(host)) return null; // already exact, no rewrite needed
+    const match = correctDomain(host);
+    if (!match || match.dist === 0) return null;
+    u.hostname = match.host;
+    return u.toString();
+  } catch { return null; }
 }
 
 function extractUrls(text) {
   const matches = text.match(URL_REGEX) || [];
   const candidates = new Set();
+  const addWithCorrection = (raw) => {
+    const c = cleanUrl(raw);
+    if (!c) return;
+    candidates.add(c);
+    const corrected = dictionaryCorrect(c);
+    if (corrected) candidates.add(corrected);
+  };
   for (const m of matches) {
-    const c = cleanUrl(m);
-    if (c) candidates.add(c);
-    // Also try trimming the first character — recovers "Sstudyfinds.com" → "studyfinds.com"
-    // when a favicon glyph fused into the leading letter. Only trim once; trimming
-    // more is too aggressive and starts mangling legit URLs.
+    addWithCorrection(m);
+    // Also try trimming the first character — recovers "Sstudyfinds.com" →
+    // "studyfinds.com" when a favicon glyph fused into the leading letter.
+    // Combined with dictionary correction, this also rescues cases where the
+    // favicon adds a different junk character (e.g. "estudyfinds.com").
     if (m.length > 8) {
-      const trimmed = cleanUrl(m.slice(1));
-      if (trimmed) candidates.add(trimmed);
+      addWithCorrection(m.slice(1));
     }
   }
   // Sort by score descending — best candidate wins.
@@ -90,7 +115,7 @@ export default function Iota() {
   const scanStartRef = useRef(0); // timestamp when scanning started
   const bestCandidateRef = useRef(null); // {url, score} — fallback if budget expires
 
-  const [status, setStatus] = useState("idle"); // idle | loading | scanning | found | error
+  const [status, setStatus] = useState("idle"); // idle | loading | scanning | found | needsRetry | error
   const [errorMsg, setErrorMsg] = useState("");
   const [foundUrl, setFoundUrl] = useState(null);
   const [history, setHistory] = useState([]);
@@ -114,12 +139,13 @@ export default function Iota() {
         // Tune Tesseract for URLs:
         // - Restrict character set to URL-legal chars. Cuts hallucinated punctuation
         //   and weird unicode that mess up regex matching.
-        // - PSM 6 = "assume a single uniform block of text". More forgiving than
-        //   PSM 7 (single line), which fails if the crop has any padding or noise.
+        // - PSM 7 = "single text line". Now that Otsu binarization gives Tesseract
+        //   a clean two-class image, PSM 7 is the right fit for an address bar:
+        //   it skips block-segmentation overhead and reduces multi-line hallucinations.
         await worker.setParameters({
           tessedit_char_whitelist:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%",
-          tessedit_pageseg_mode: "6",
+          tessedit_pageseg_mode: "7",
         });
         workerRef.current = worker;
         tesseractReadyRef.current = true;
@@ -295,18 +321,48 @@ export default function Iota() {
     setSharpness(sharpScore);
 
     // Skip OCR if frame is too blurry — saves CPU, lets autofocus catch up.
-    if (lapVar < 80) {
+    // 150 is a stricter gate than the original 80; a meaningful chunk of frames
+    // in the 80-150 band were being passed to Tesseract and producing garbage.
+    if (lapVar < 150) {
       if (status === "scanning") {
         scanLoopRef.current = setTimeout(captureAndScan, 200);
       }
       return;
     }
 
-    // 4) PREPROCESS: contrast-stretched grayscale. Gentle, doesn't destroy text.
-    const range = Math.max(1, maxV - minV);
+    // 4) PREPROCESS: Otsu binarization with auto-inversion.
+    //    Tinted backgrounds (yellow news sites, off-white articles, dark mode
+    //    browsers) confuse Tesseract when handed a continuous grayscale ramp.
+    //    Otsu collapses the band into two pixel classes — text vs. background —
+    //    using the threshold that maximizes inter-class variance. We then flip
+    //    polarity if the result is light-on-dark so Tesseract always sees black
+    //    glyphs on a white background.
+    const hist = new Uint32Array(256);
+    for (let j = 0; j < gray.length; j++) hist[gray[j]]++;
+    const total = gray.length;
+    let sumAll = 0;
+    for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+    let sumB = 0, wB = 0, varMax = 0, threshold = 127;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB;
+      const mF = (sumAll - sumB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > varMax) { varMax = v; threshold = t; }
+    }
+    let darkCount = 0;
+    for (let j = 0; j < gray.length; j++) if (gray[j] < threshold) darkCount++;
+    // If text glyphs are the *minority* class (light-on-dark layout), invert so
+    // glyphs land in the dark class, which is what Tesseract expects.
+    const invert = darkCount * 2 > total;
     for (let i = 0, j = 0; i < px.length; i += 4, j++) {
-      const stretched = ((gray[j] - minV) * 255 / range) | 0;
-      px[i] = stretched; px[i + 1] = stretched; px[i + 2] = stretched;
+      const dark = gray[j] < threshold;
+      const out = (dark !== invert) ? 0 : 255;
+      px[i] = out; px[i + 1] = out; px[i + 2] = out;
     }
     ctx.putImageData(img, 0, 0);
 
@@ -335,27 +391,40 @@ export default function Iota() {
         }
 
         // Confidence-based locking:
-        // - Reads scoring >= 5 (lowercase domain + common TLD = baseline good) lock in immediately
-        // - Lower-confidence reads need one more matching frame
+        // - Reads scoring >= 5 (lowercase domain + common TLD, or dictionary
+        //   hit) lock in immediately
+        // - Lower-confidence reads need 3 frames in agreement before locking
+        //   in. Two was too eager: a single OCR misread repeated twice could
+        //   slip through; three near-identical reads is a much stronger signal.
         if (conf >= 5) {
           handleFound(url);
           return;
         }
         const votes = votesRef.current;
         votes.set(host, (votes.get(host) || 0) + 1);
-        if (votes.get(host) >= 2) {
+        if (votes.get(host) >= 3) {
           handleFound(url);
           return;
         }
       } catch { /* malformed url, skip */ }
     }
 
-    // Time budget: if we've been scanning > 4 seconds without locking in, accept
-    // whatever the best candidate so far was. Sub-optimal but bounded — user gets
-    // a result, can retry with "again" if it's wrong. Far better than scanning forever.
-    if (elapsed > 4000 && bestCandidateRef.current) {
-      handleFound(bestCandidateRef.current.url);
-      return;
+    // Time budget. The 4s gate fires only if we've seen a *plausible* candidate
+    // (score >= 4: lowercase host with a common TLD at minimum). Accepting a
+    // junk read is worse than asking the user to re-aim — wrong redirects are
+    // the user's loudest complaint. If nothing acceptable exists yet, give the
+    // camera until 6s on slower phones, then bail with a graceful retry prompt.
+    if (elapsed > 4000) {
+      const best = bestCandidateRef.current;
+      if (best && best.score >= 4) {
+        handleFound(best.url);
+        return;
+      }
+      if (elapsed > 6000) {
+        stopCamera();
+        setStatus("needsRetry");
+        return;
+      }
     }
 
     if (status === "scanning") {
@@ -786,6 +855,39 @@ export default function Iota() {
               >
                 try again
               </button>
+            </div>
+          )}
+
+          {status === "needsRetry" && (
+            <div className="fade-up rounded-3xl bg-white border border-stone-200 p-6 space-y-4"
+                 style={{ boxShadow: "0 20px 40px -15px rgba(40, 30, 20, 0.15)" }}>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center">
+                  <AlertCircle className="w-4 h-4 text-amber-700" strokeWidth={2} />
+                </div>
+                <span className="mono text-[10px] tracking-widest uppercase text-amber-700">
+                  hold steadier
+                </span>
+              </div>
+              <p className="text-sm text-stone-700 leading-relaxed italic">
+                Couldn't read the URL clearly. Try moving closer, holding steadier,
+                or tapping to refocus.
+              </p>
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={startScan}
+                  className="flex-1 bg-stone-900 text-stone-50 rounded-xl py-3 text-sm hover:bg-stone-800 transition-colors flex items-center justify-center gap-2"
+                >
+                  <Camera className="w-4 h-4" strokeWidth={1.5} />
+                  scan again
+                </button>
+                <button
+                  onClick={() => setStatus("idle")}
+                  className="px-4 bg-stone-100 text-stone-700 rounded-xl py-3 text-sm hover:bg-stone-200 transition-colors"
+                >
+                  cancel
+                </button>
+              </div>
             </div>
           )}
         </main>
