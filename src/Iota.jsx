@@ -114,6 +114,7 @@ export default function Iota() {
   const votesRef = useRef(new Map()); // hostname -> count of frames that agreed
   const scanStartRef = useRef(0); // timestamp when scanning started
   const bestCandidateRef = useRef(null); // {url, score} — fallback if budget expires
+  const skipCountRef = useRef(0); // consecutive frames skipped by the sharpness gate
 
   const [status, setStatus] = useState("idle"); // idle | loading | scanning | found | needsRetry | error
   const [errorMsg, setErrorMsg] = useState("");
@@ -139,13 +140,13 @@ export default function Iota() {
         // Tune Tesseract for URLs:
         // - Restrict character set to URL-legal chars. Cuts hallucinated punctuation
         //   and weird unicode that mess up regex matching.
-        // - PSM 7 = "single text line". Now that Otsu binarization gives Tesseract
-        //   a clean two-class image, PSM 7 is the right fit for an address bar:
-        //   it skips block-segmentation overhead and reduces multi-line hallucinations.
+        // - PSM 6 = "assume a single uniform block of text". More forgiving than
+        //   PSM 7 (single line), which fails when the crop has any padding,
+        //   tab-strip bleed, or the URL line wraps in a narrow window.
         await worker.setParameters({
           tessedit_char_whitelist:
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%",
-          tessedit_pageseg_mode: "7",
+          tessedit_pageseg_mode: "6",
         });
         workerRef.current = worker;
         tesseractReadyRef.current = true;
@@ -321,14 +322,19 @@ export default function Iota() {
     setSharpness(sharpScore);
 
     // Skip OCR if frame is too blurry — saves CPU, lets autofocus catch up.
-    // 150 is a stricter gate than the original 80; a meaningful chunk of frames
-    // in the 80-150 band were being passed to Tesseract and producing garbage.
-    if (lapVar < 150) {
+    // But cap how many frames in a row we skip: on phones in macro-lens mode,
+    // or in low light, the Laplacian variance can sit just below threshold for
+    // a long stretch and we end up never running OCR at all. After 3 skips,
+    // force a recognition pass — Tesseract still gets a useful read on
+    // borderline frames much of the time.
+    if (lapVar < 60 && skipCountRef.current < 3) {
+      skipCountRef.current++;
       if (status === "scanning") {
         scanLoopRef.current = setTimeout(captureAndScan, 200);
       }
       return;
     }
+    skipCountRef.current = 0;
 
     // 4) PREPROCESS: Otsu binarization with auto-inversion.
     //    Tinted backgrounds (yellow news sites, off-white articles, dark mode
@@ -452,6 +458,7 @@ export default function Iota() {
     setFocusPulse(null);
     votesRef.current = new Map();
     bestCandidateRef.current = null;
+    skipCountRef.current = 0;
     scanStartRef.current = Date.now();
 
     if (!tesseractReadyRef.current) {
