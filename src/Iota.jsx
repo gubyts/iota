@@ -122,6 +122,7 @@ export default function Iota() {
   const [copied, setCopied] = useState(null); // null=not attempted, true=ok, false=failed
   const [sharpness, setSharpness] = useState(0); // 0-1 estimated focus quality
   const [focusPulse, setFocusPulse] = useState(null); // {x, y, key} for tap-to-focus indicator
+  const [diagnostic, setDiagnostic] = useState(null); // {kind:"error"|"empty"|"noUrl", message:string} | null
 
   // OCR runs server-side via /api/ocr (Google Cloud Vision). No worker init
   // needed in the browser — we just capture frames and POST them up.
@@ -143,7 +144,15 @@ export default function Iota() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ image: base64 }),
     });
-    if (!resp.ok) throw new Error(`ocr ${resp.status}`);
+    // Carry the API's actual error message through so the UI can show it.
+    // resp.text() rather than json() because a misconfigured rewrite can
+    // return HTML, which would otherwise blow up the JSON parser.
+    if (!resp.ok) {
+      const body = await resp.text();
+      let detail = body.slice(0, 200);
+      try { detail = JSON.parse(body).error || detail; } catch { /* not json */ }
+      throw new Error(`${resp.status}: ${detail}`);
+    }
     const data = await resp.json();
     return data.text || "";
   }, []);
@@ -305,9 +314,23 @@ export default function Iota() {
     let url = null;
     try {
       const text = await recognizeRemote(canvas);
-      const urls = extractUrls(text);
-      if (urls.length > 0) url = urls[0];
-    } catch { /* skip frame */ }
+      if (!text) {
+        setDiagnostic({ kind: "empty", message: "vision returned no text" });
+      } else {
+        const urls = extractUrls(text);
+        if (urls.length > 0) {
+          url = urls[0];
+          setDiagnostic(null);
+        } else {
+          // Vision saw something but no URL parsed out — show a preview so we
+          // can tell whether it's reading the wrong region, garbled text, etc.
+          const preview = text.slice(0, 80).replace(/\s+/g, " ").trim();
+          setDiagnostic({ kind: "noUrl", message: preview });
+        }
+      }
+    } catch (e) {
+      setDiagnostic({ kind: "error", message: String(e?.message || e) });
+    }
     setScanCount(c => c + 1);
 
     const elapsed = Date.now() - scanStartRef.current;
@@ -386,6 +409,7 @@ export default function Iota() {
     setCopied(null);
     setSharpness(0);
     setFocusPulse(null);
+    setDiagnostic(null);
     votesRef.current = new Map();
     bestCandidateRef.current = null;
     skipCountRef.current = 0;
@@ -782,6 +806,18 @@ export default function Iota() {
                 Couldn't read the URL clearly. Try moving closer, holding steadier,
                 or tapping to refocus.
               </p>
+              {diagnostic && (
+                <div className="rounded-xl bg-stone-50 border border-stone-200 px-3 py-2">
+                  <p className="mono text-[9px] tracking-widest uppercase text-stone-500 mb-1">
+                    {diagnostic.kind === "error" ? "api error" :
+                     diagnostic.kind === "empty" ? "no text from vision" :
+                     "vision read"}
+                  </p>
+                  <p className="mono text-[11px] text-stone-700 break-all leading-snug">
+                    {diagnostic.message || "(empty)"}
+                  </p>
+                </div>
+              )}
               <div className="flex gap-2 pt-2">
                 <button
                   onClick={startScan}

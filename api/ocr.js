@@ -48,10 +48,13 @@ export default async function handler(req, res) {
     }
 
     const data = await r.json();
-    const text =
-      data.responses?.[0]?.fullTextAnnotation?.text ??
-      data.responses?.[0]?.textAnnotations?.[0]?.description ??
-      "";
+    const r0 = data.responses?.[0];
+    // Vision can return 200 OK with a per-request error embedded in the
+    // response. Surface that — silent "" responses make debugging hell.
+    if (r0?.error) {
+      return res.status(502).json({ error: "vision per-request error", details: r0.error });
+    }
+    const text = r0?.fullTextAnnotation?.text ?? r0?.textAnnotations?.[0]?.description ?? "";
     return res.status(200).json({ text });
   } catch (e) {
     return res.status(500).json({ error: "vision request failed", message: e?.message });
