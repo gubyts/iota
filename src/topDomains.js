@@ -261,18 +261,35 @@ function damerauLev(a, b, maxDist) {
 }
 
 // Try to map a hostname to a known domain. Returns { host, dist } where dist
-// is 0 for an exact match, 1-2 for a fuzzy correction, or null if no candidate
-// is within edit distance 2.
+// is 0 for an exact match (or a subdomain of a known apex — "do not rewrite"),
+// 1-2 for a fuzzy correction, or null if no candidate is within edit distance 2.
 export function correctDomain(host) {
   if (!host) return null;
   const lower = host.toLowerCase();
   if (TOP_DOMAINS.has(lower)) return { host: lower, dist: 0 };
+
+  // If the input is a subdomain of a known apex (e.g. tv.youtube.com under
+  // youtube.com), leave it alone. Without this short-circuit the fuzzy matcher
+  // would treat "tv.youtube.com" as 2 deletions away from "youtube.com" and
+  // collapse the subdomain. Returning dist:0 tells the caller "do not rewrite".
+  const labels = lower.split(".");
+  for (let i = 1; i < labels.length - 1; i++) {
+    if (TOP_DOMAINS.has(labels.slice(i).join("."))) {
+      return { host: lower, dist: 0 };
+    }
+  }
+
+  const dotCount = labels.length - 1;
   const len = lower.length;
   let best = null, bestD = 3;
   for (let dl = Math.max(1, len - 2); dl <= len + 2; dl++) {
     const bucket = BY_LENGTH.get(dl);
     if (!bucket) continue;
     for (const cand of bucket) {
+      // Same domain structure (label count) — belt-and-suspenders to keep
+      // subdomains from collapsing to apexes if the subdomain check above
+      // missed (e.g. unknown subdomain under unknown apex).
+      if ((cand.match(/\./g) || []).length !== dotCount) continue;
       const d = damerauLev(lower, cand, bestD - 1);
       if (d < bestD) {
         bestD = d;
