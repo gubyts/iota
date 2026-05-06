@@ -523,16 +523,16 @@ export default function Iota() {
 
   return (
     <div
-      className="min-h-screen w-full text-stone-900"
+      className="min-h-screen w-full text-stone-100"
       style={{
-        background: "radial-gradient(ellipse at top, #faf8f3 0%, #f0ebe0 100%)",
-        fontFamily: "'Italiana', 'Cormorant Garamond', Georgia, serif",
+        background: "radial-gradient(ellipse at top, #1c1917 0%, #07060a 100%)",
+        fontFamily: "'Jost', 'Futura', 'Helvetica Neue', system-ui, sans-serif",
       }}
     >
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Italiana&family=JetBrains+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap');
         .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
-        .display { font-family: 'Italiana', 'Cormorant Garamond', Georgia, serif; letter-spacing: 0.01em; }
+        .display { font-family: 'Jost', 'Futura', 'Helvetica Neue', sans-serif; font-style: italic; letter-spacing: -0.01em; }
         @keyframes pulse-ring {
           0% { transform: scale(0.95); opacity: 0.7; }
           70% { transform: scale(1.4); opacity: 0; }
@@ -556,9 +556,9 @@ export default function Iota() {
           content: "";
           position: absolute; inset: 0;
           background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
-          opacity: 0.05;
+          opacity: 0.04;
           pointer-events: none;
-          mix-blend-mode: multiply;
+          mix-blend-mode: screen;
         }
       `}</style>
 
@@ -571,39 +571,36 @@ export default function Iota() {
       >
         {/* Header */}
         <header className="mb-12 fade-up">
-          <div className="flex items-baseline gap-3 mb-2">
-            <h1 className="display text-7xl font-normal leading-none">
+          <div className="flex items-baseline gap-3">
+            <h1 className="display text-7xl font-normal leading-none text-stone-100">
               iota
             </h1>
             <span className="mono text-xs text-stone-500 tracking-widest uppercase">v0.1</span>
           </div>
-          <p className="text-stone-600 text-base leading-relaxed max-w-xs font-light">
-            point your phone at a webpage. it'll come with you.
-          </p>
         </header>
 
         {/* Main interaction area */}
         <main className="space-y-6">
           {status === "idle" && (
             <div className="fade-up space-y-10">
-              <div className="space-y-4 text-sm text-stone-600 leading-relaxed">
+              <div className="space-y-4 text-sm text-stone-300 leading-relaxed">
                 <div className="flex items-start gap-4">
-                  <span className="mono text-[10px] text-stone-400 mt-1 tracking-widest">01</span>
+                  <span className="mono text-[10px] text-stone-500 mt-1 tracking-widest">01</span>
                   <span>Open the page on your computer.</span>
                 </div>
                 <div className="flex items-start gap-4">
-                  <span className="mono text-[10px] text-stone-400 mt-1 tracking-widest">02</span>
+                  <span className="mono text-[10px] text-stone-500 mt-1 tracking-widest">02</span>
                   <span>Aim your phone at the address bar.</span>
                 </div>
                 <div className="flex items-start gap-4">
-                  <span className="mono text-[10px] text-stone-400 mt-1 tracking-widest">03</span>
+                  <span className="mono text-[10px] text-stone-500 mt-1 tracking-widest">03</span>
                   <span>iota reads the URL and opens it here.</span>
                 </div>
               </div>
 
               <button
                 onClick={startScan}
-                className="group w-full rounded-full bg-stone-900 text-stone-50 px-6 py-4 flex items-center justify-center gap-3 hover:bg-stone-800 transition-colors"
+                className="group w-full rounded-full bg-stone-100 text-stone-900 px-6 py-4 flex items-center justify-center gap-3 hover:bg-white transition-colors"
               >
                 <Camera className="w-4 h-4" strokeWidth={1.5} />
                 <span className="text-sm tracking-wide font-light">scan a screen</span>
@@ -687,12 +684,12 @@ export default function Iota() {
               </div>
 
               <div className="text-center">
-                <p className="text-sm text-stone-600 italic mb-4">
+                <p className="text-sm text-stone-400 mb-4">
                   Aim the URL inside the box. Tap to focus.
                 </p>
                 <button
                   onClick={cancelScan}
-                  className="mono text-xs tracking-widest uppercase text-stone-500 hover:text-stone-900 transition-colors"
+                  className="mono text-xs tracking-widest uppercase text-stone-500 hover:text-stone-200 transition-colors"
                 >
                   cancel
                 </button>
@@ -702,43 +699,38 @@ export default function Iota() {
 
           {status === "found" && foundUrl && (
             <div className="fade-up space-y-6">
-              <div className="rounded-3xl bg-white border border-stone-200 p-6 space-y-5"
-                   style={{ boxShadow: "0 20px 40px -15px rgba(40, 30, 20, 0.15)" }}>
+              <div className="rounded-3xl bg-stone-900 border border-stone-800 p-6 space-y-5"
+                   style={{ boxShadow: "0 20px 40px -15px rgba(0, 0, 0, 0.5)" }}>
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center">
-                    <Check className="w-4 h-4 text-emerald-700" strokeWidth={2} />
+                  <div className="w-8 h-8 rounded-full bg-emerald-950 flex items-center justify-center">
+                    <Check className="w-4 h-4 text-emerald-300" strokeWidth={2} />
                   </div>
-                  <span className="mono text-[10px] tracking-widest uppercase text-emerald-700">
+                  <span className="mono text-[10px] tracking-widest uppercase text-emerald-300">
                     captured
                   </span>
                 </div>
 
                 <div>
                   <p className="text-xs text-stone-500 uppercase tracking-wider mb-2 mono">url</p>
-                  <p className="mono text-sm break-all text-stone-900 leading-relaxed">
+                  <p className="mono text-sm break-all text-stone-100 leading-relaxed">
                     {foundUrl}
                   </p>
                   {copied && (
-                    <p className="mt-3 mono text-[10px] tracking-widest uppercase text-emerald-700 flex items-center gap-1.5">
+                    <p className="mt-3 mono text-[10px] tracking-widest uppercase text-emerald-300 flex items-center gap-1.5">
                       <Check className="w-3 h-3" strokeWidth={2.5} />
                       copied to clipboard
-                    </p>
-                  )}
-                  {copied === false && (
-                    <p className="mt-3 mono text-[10px] tracking-widest uppercase text-stone-500">
-                      couldn't auto-copy — tap to copy
                     </p>
                   )}
                 </div>
 
                 {redirectIn !== null && redirectIn > 0 && (
-                  <div className="flex items-center justify-between pt-4 border-t border-stone-100">
-                    <span className="text-sm text-stone-600 italic">
+                  <div className="flex items-center justify-between pt-4 border-t border-stone-800">
+                    <span className="text-sm text-stone-400">
                       opening in {redirectIn}…
                     </span>
                     <button
                       onClick={cancelRedirect}
-                      className="mono text-[10px] tracking-widest uppercase text-stone-500 hover:text-stone-900"
+                      className="mono text-[10px] tracking-widest uppercase text-stone-500 hover:text-stone-200"
                     >
                       cancel
                     </button>
@@ -748,23 +740,23 @@ export default function Iota() {
                 <div className="flex gap-2 pt-2">
                   <button
                     onClick={openNow}
-                    className="flex-1 bg-stone-900 text-stone-50 rounded-xl py-3 text-sm hover:bg-stone-800 transition-colors flex items-center justify-center gap-2"
+                    className="flex-1 bg-stone-100 text-stone-900 rounded-xl py-3 text-sm hover:bg-white transition-colors flex items-center justify-center gap-2"
                   >
                     <Zap className="w-4 h-4" strokeWidth={1.5} />
                     open now
                   </button>
                   <button
                     onClick={handleShare}
-                    className="px-4 bg-stone-100 text-stone-700 rounded-xl py-3 text-sm hover:bg-stone-200 transition-colors flex items-center justify-center gap-2"
+                    className="px-4 bg-stone-800 text-stone-200 rounded-xl py-3 text-sm hover:bg-stone-700 transition-colors flex items-center justify-center gap-2"
                     aria-label="share url"
                   >
                     <Share2 className="w-4 h-4" strokeWidth={1.5} />
                   </button>
                   <button
                     onClick={() => { setStatus("idle"); setFoundUrl(null); setRedirectIn(null); setCopied(null); }}
-                    className="px-4 bg-stone-100 text-stone-700 rounded-xl py-3 text-sm hover:bg-stone-200 transition-colors"
+                    className="px-4 bg-stone-800 text-stone-200 rounded-xl py-3 text-sm hover:bg-stone-700 transition-colors"
                   >
-                    again
+                    new
                   </button>
                 </div>
               </div>
@@ -772,19 +764,19 @@ export default function Iota() {
           )}
 
           {status === "error" && (
-            <div className="fade-up rounded-3xl bg-white border border-stone-200 p-6 space-y-4">
+            <div className="fade-up rounded-3xl bg-stone-900 border border-stone-800 p-6 space-y-4">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center">
-                  <AlertCircle className="w-4 h-4 text-red-700" strokeWidth={2} />
+                <div className="w-8 h-8 rounded-full bg-red-950 flex items-center justify-center">
+                  <AlertCircle className="w-4 h-4 text-red-300" strokeWidth={2} />
                 </div>
-                <span className="mono text-[10px] tracking-widest uppercase text-red-700">
+                <span className="mono text-[10px] tracking-widest uppercase text-red-300">
                   trouble
                 </span>
               </div>
-              <p className="text-sm text-stone-700 leading-relaxed">{errorMsg}</p>
+              <p className="text-sm text-stone-300 leading-relaxed">{errorMsg}</p>
               <button
                 onClick={() => { setStatus("idle"); setErrorMsg(""); }}
-                className="mono text-xs tracking-widest uppercase text-stone-500 hover:text-stone-900"
+                className="mono text-xs tracking-widest uppercase text-stone-500 hover:text-stone-200"
               >
                 try again
               </button>
@@ -792,28 +784,28 @@ export default function Iota() {
           )}
 
           {status === "needsRetry" && (
-            <div className="fade-up rounded-3xl bg-white border border-stone-200 p-6 space-y-4"
-                 style={{ boxShadow: "0 20px 40px -15px rgba(40, 30, 20, 0.15)" }}>
+            <div className="fade-up rounded-3xl bg-stone-900 border border-stone-800 p-6 space-y-4"
+                 style={{ boxShadow: "0 20px 40px -15px rgba(0, 0, 0, 0.5)" }}>
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center">
-                  <AlertCircle className="w-4 h-4 text-amber-700" strokeWidth={2} />
+                <div className="w-8 h-8 rounded-full bg-amber-950 flex items-center justify-center">
+                  <AlertCircle className="w-4 h-4 text-amber-300" strokeWidth={2} />
                 </div>
-                <span className="mono text-[10px] tracking-widest uppercase text-amber-700">
+                <span className="mono text-[10px] tracking-widest uppercase text-amber-300">
                   hold steadier
                 </span>
               </div>
-              <p className="text-sm text-stone-700 leading-relaxed italic">
+              <p className="text-sm text-stone-300 leading-relaxed">
                 Couldn't read the URL clearly. Try moving closer, holding steadier,
                 or tapping to refocus.
               </p>
               {diagnostic && (
-                <div className="rounded-xl bg-stone-50 border border-stone-200 px-3 py-2">
+                <div className="rounded-xl bg-stone-950 border border-stone-800 px-3 py-2">
                   <p className="mono text-[9px] tracking-widest uppercase text-stone-500 mb-1">
                     {diagnostic.kind === "error" ? "api error" :
                      diagnostic.kind === "empty" ? "no text from vision" :
                      "vision read"}
                   </p>
-                  <p className="mono text-[11px] text-stone-700 break-all leading-snug">
+                  <p className="mono text-[11px] text-stone-300 break-all leading-snug">
                     {diagnostic.message || "(empty)"}
                   </p>
                 </div>
@@ -821,14 +813,14 @@ export default function Iota() {
               <div className="flex gap-2 pt-2">
                 <button
                   onClick={startScan}
-                  className="flex-1 bg-stone-900 text-stone-50 rounded-xl py-3 text-sm hover:bg-stone-800 transition-colors flex items-center justify-center gap-2"
+                  className="flex-1 bg-stone-100 text-stone-900 rounded-xl py-3 text-sm hover:bg-white transition-colors flex items-center justify-center gap-2"
                 >
                   <Camera className="w-4 h-4" strokeWidth={1.5} />
                   scan again
                 </button>
                 <button
                   onClick={() => setStatus("idle")}
-                  className="px-4 bg-stone-100 text-stone-700 rounded-xl py-3 text-sm hover:bg-stone-200 transition-colors"
+                  className="px-4 bg-stone-800 text-stone-200 rounded-xl py-3 text-sm hover:bg-stone-700 transition-colors"
                 >
                   cancel
                 </button>
@@ -850,10 +842,10 @@ export default function Iota() {
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="group flex items-center gap-3 py-2 border-b border-stone-200/60 hover:border-stone-400 transition-colors"
+                    className="group flex items-center gap-3 py-2 border-b border-stone-800 hover:border-stone-600 transition-colors"
                   >
-                    <LinkIcon className="w-3 h-3 text-stone-400 group-hover:text-stone-700 shrink-0" strokeWidth={1.5} />
-                    <span className="mono text-xs text-stone-600 group-hover:text-stone-900 truncate">
+                    <LinkIcon className="w-3 h-3 text-stone-500 group-hover:text-stone-200 shrink-0" strokeWidth={1.5} />
+                    <span className="mono text-xs text-stone-400 group-hover:text-stone-100 truncate">
                       {item.url.replace(/^https?:\/\//, "")}
                     </span>
                   </a>
@@ -864,7 +856,7 @@ export default function Iota() {
         )}
 
         <footer className="absolute bottom-6 left-0 right-0 text-center">
-          <p className="mono text-[9px] tracking-[0.3em] uppercase text-stone-400">
+          <p className="mono text-[9px] tracking-[0.3em] uppercase text-stone-600">
             ι · bridge between screens
           </p>
         </footer>
